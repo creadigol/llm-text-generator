@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <meta name="googlebot" content="noindex, nofollow">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <title>LLMs Txt Generator – Tool by Attrock</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -60,7 +63,10 @@
     <!-- Processing overlay -->
     <div class="processing-overlay" id="processingOverlay">
         <div class="spinner-container">
-            <div class="spinner"></div>
+            <div class="logo-spinner">
+                <img src="/logo.jpeg" alt="Logo" class="loader-logo" />
+                <div class="spinner-ring"></div>
+            </div>
             <div class="processing-message">Processing website content...</div>
             <div class="processing-detail" id="processingDetail">This may take a few moments</div>
             <div class="processing-progress">
@@ -75,7 +81,7 @@
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
-                    <div class="modal-title">You're one step away</div>
+                    <h4 class="modal-title">You're one step away</h4>
                     <button type="button" class="btn-close" aria-label="Close" id="modalCloseBtn">×</button>
                 </div>
                 <div class="modal-body">
@@ -106,7 +112,7 @@
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
-                    <div class="modal-title">Verify OTP</div>
+                    <h4 class="modal-title">Verify OTP</h4>
                     <button type="button" class="btn-close" aria-label="Close" id="otpModalCloseBtn">×</button>
                 </div>
                 <div class="modal-body">
@@ -117,11 +123,15 @@
                             <label class="form-label">OTP*</label>
                             <div class="otp-input-container">
                                 <input type="text" class="otp-input" maxlength="1" data-index="0">
+                                <span class="otp-separator">-</span>
                                 <input type="text" class="otp-input" maxlength="1" data-index="1">
+                                <span class="otp-separator">-</span>
                                 <input type="text" class="otp-input" maxlength="1" data-index="2">
                                 <span class="otp-separator">-</span>
                                 <input type="text" class="otp-input" maxlength="1" data-index="3">
+                                <span class="otp-separator">-</span>
                                 <input type="text" class="otp-input" maxlength="1" data-index="4">
+                                <span class="otp-separator">-</span>
                                 <input type="text" class="otp-input" maxlength="1" data-index="5">
                             </div>
                             <div id="otpErrorMsg" class="form-error" aria-live="polite"></div>

@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, make_response
+from flask import Flask, request, jsonify, render_template, make_response, send_from_directory
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -201,6 +201,15 @@ def robots_txt():
     resp.headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive, nosnippet, noimageindex'
     return resp
 
+# Serve logo asset from project root so it can be used in loader
+@app.route('/logo.jpeg')
+def serve_logo_jpeg():
+    try:
+        return send_from_directory(os.path.dirname(__file__), 'logo.jpeg', mimetype='image/jpeg')
+    except Exception as e:
+        logger.error(f"Failed to serve logo.jpeg: {str(e)}")
+        return ("", 404)
+
 # Prepare generation: extract links quickly and return job_id
 @app.route('/prepare_generation', methods=['POST'])
 def prepare_generation():
@@ -228,14 +237,25 @@ def prepare_generation():
         if not check_robots_txt(website_url):
             return jsonify({"error": f"Access to {website_url} is disallowed by robots.txt"}), 403
 
-        # Fetch main page and extract links
-        response = requests.get(website_url, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
+        # ONLY use sitemap URLs for batching (no on-page crawling)
+        sitemap_urls = get_sitemap_urls(website_url)
+        if not sitemap_urls:
+            return jsonify({"error": "No sitemap URLs found for this site"}), 404
 
-        soup = BeautifulSoup(response.text, 'html.parser')
-        site_description = extract_site_description(soup, website_url)
-        internal_links = extract_internal_links(soup, website_url)
-        valid_links = internal_links
+        # Create link objects expected by processors
+        valid_links = []
+        for u in sitemap_urls:
+            try:
+                parsed = urlparse(u)
+                # Use path (without query) as a simple description fallback
+                desc = parsed.path.strip('/') or parsed.netloc
+                valid_links.append({"url": u, "description": desc})
+            except Exception:
+                # Skip malformed URLs
+                continue
+
+        # Derive a basic site description without fetching the full page
+        site_description = f"Sitemap-discovered pages for {website_url}"
 
         job_id = _create_job(website_url, output_type)
         with jobs_lock:
@@ -2527,16 +2547,7 @@ def send_otp():
                 msg['To'] = email
                 msg['Subject'] = "Your LLM Text Generator Verification Code"
                 
-                body = f"""
-                Hello {name},
-                
-                Your verification code is: {otp}
-                
-                This code will expire in 10 minutes.
-                
-                Best regards,
-                LLM Text Generator Team
-                """
+                body = f"Hi {name},\n\nYour OTP code is {otp}\n\nThis code is valid for 5 minutes.\n"
                 
                 msg.attach(MIMEText(body, 'plain'))
                 
@@ -2577,8 +2588,8 @@ def verify_otp():
         
         stored_data = otp_storage[email]
         
-        # Check if OTP is expired (10 minutes)
-        if time.time() - stored_data['timestamp'] > 600:  # 10 minutes
+        # Check if OTP is expired (5 minutes)
+        if time.time() - stored_data['timestamp'] > 300:  # 5 minutes
             del otp_storage[email]
             return jsonify({"error": "OTP expired"}), 400
         

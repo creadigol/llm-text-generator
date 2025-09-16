@@ -169,8 +169,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initialize result_height: always reset to 0 on page load
     function initializeResultHeightStorage() {
-        setCookie('result_height', '0');
-        localStorage.setItem('result_height', '0');
+            setCookie('result_height', '0');
+            localStorage.setItem('result_height', '0');
     }
 
     // Function to load saved iframe height (prefer cookie, fallback to localStorage)
@@ -390,7 +390,7 @@ document.addEventListener('DOMContentLoaded', () => {
             setCookie('result_height', '0');
             localStorage.setItem('result_height', '0');
             outputIframe.style.height = '0px';
-
+            
             // Show processing overlay with animation
             processingOverlay.classList.add('show');
             
@@ -516,24 +516,13 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Check if user has already verified OTP for this tool (session flag)
-        if (isToolVisited(LLM_TOOL_KEY)) {
-            // User has already verified, proceed directly to generation
+        // Always require OTP if no verified inquiry cookie
             pendingGenerationData = {
                 url: url,
                 outputType: selectedOutputType
             };
-            startGeneration();
-        } else {
-            // User needs to verify OTP first
-            pendingGenerationData = {
-                url: url,
-                outputType: selectedOutputType
-            };
-            
             // Show user details modal first
             showUserDetailsModal();
-        }
     });
 
     // User details form submission
@@ -814,7 +803,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Process in batches
             startSmoothProgress(5);
             let processed = 0;
-            const batchSize = 10;
+            const batchSize = 5;
             processingDetail.textContent = `Processing 0/${total} links...`;
 
             while (processed < total && currentProcessingState) {
@@ -848,31 +837,31 @@ document.addEventListener('DOMContentLoaded', () => {
             const result = await finalResp.json();
             completeSmoothProgress();
             setProcessingState(false);
-            if (result.is_zip_mode) {
-                const zipData = result.zip_data;
-                const zipBytes = new Uint8Array(zipData.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-                window.storedZipBlob = new Blob([zipBytes], { type: 'application/zip' });
-                const combinedOutput = `=== SUMMARIZED CONTENT ===\n\n${result.llms_text}\n\n=== FULL TEXT CONTENT ===\n\n${result.llms_full_text}`;
-                displayContentInIframe(combinedOutput);
-                statusMessage.textContent = 'Both LLM Text and Full Text generated successfully! Click download to get the zip file with separate .txt files.';
-                statusMessage.className = 'status-message status-success';
+                if (result.is_zip_mode) {
+                    const zipData = result.zip_data;
+                    const zipBytes = new Uint8Array(zipData.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+                    window.storedZipBlob = new Blob([zipBytes], { type: 'application/zip' });
+                    const combinedOutput = `=== SUMMARIZED CONTENT ===\n\n${result.llms_text}\n\n=== FULL TEXT CONTENT ===\n\n${result.llms_full_text}`;
+                    displayContentInIframe(combinedOutput);
+                    statusMessage.textContent = 'Both LLM Text and Full Text generated successfully! Click download to get the zip file with separate .txt files.';
+                    statusMessage.className = 'status-message status-success';
                 downloadBtn.textContent = 'Download zip file';
-            } else if (result.llms_text) {
-                displayContentInIframe(result.llms_text);
-                statusMessage.textContent = 'LLM Text generated successfully!';
-                statusMessage.className = 'status-message status-success';
+                } else if (result.llms_text) {
+                    displayContentInIframe(result.llms_text);
+                    statusMessage.textContent = 'LLM Text generated successfully!';
+                    statusMessage.className = 'status-message status-success';
                 downloadBtn.textContent = 'Download text file';
-            } else if (result.llms_full_text) {
-                displayContentInIframe(result.llms_full_text);
-                statusMessage.textContent = 'LLM Full Text generated successfully!';
-                statusMessage.className = 'status-message status-success';
+                } else if (result.llms_full_text) {
+                    displayContentInIframe(result.llms_full_text);
+                    statusMessage.textContent = 'LLM Full Text generated successfully!';
+                    statusMessage.className = 'status-message status-success';
                 downloadBtn.textContent = 'Download text file';
-            } else {
+                } else {
                 showError('Unexpected result format');
-            }
-            copyBtn.style.display = 'inline-block';
-            downloadBtn.style.display = 'inline-block';
-
+                }
+                copyBtn.style.display = 'inline-block';
+                downloadBtn.style.display = 'inline-block';
+            
         } catch (error) {
             console.error('Error:', error);
             showError(error.message);
