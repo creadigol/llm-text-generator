@@ -34,6 +34,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Reduce noisy third-party logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # Add structured logging function
 def log_request(url, output_type, success, error=None, processing_time=None, word_count=None):
     """
@@ -60,7 +64,7 @@ def log_request(url, output_type, success, error=None, processing_time=None, wor
     }
     
     if success:
-        logger.info(f"Request processed successfully: {json.dumps(log_entry)}")
+        logger.debug(f"Request processed successfully: {json.dumps(log_entry)}")
     else:
         logger.error(f"Request failed: {json.dumps(log_entry)}")
 
@@ -1009,7 +1013,7 @@ def get_page_summary(page_url, link_title=None):
             return f"Respecting robots.txt: Not allowed to access {page_url}"
         
         # Fetch the page
-        logger.info(f"Fetching page: {page_url}")
+        logger.debug(f"Fetching page: {page_url}")
         try:
             response = requests.get(page_url, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
@@ -1041,7 +1045,7 @@ def get_page_summary(page_url, link_title=None):
         # Attempt to summarize using LLM
         if OPENAI_API_KEY:
             try:
-                logger.info(f"Calling LLM for page: {page_url}")
+                logger.debug(f"Calling LLM for page: {page_url}")
                 
                 # Add a small delay to avoid rate limiting
                 time.sleep(API_CALL_DELAY)
@@ -1073,28 +1077,23 @@ def get_page_summary(page_url, link_title=None):
                 # Clean and properly truncate the summary to 160 words
                 summary = clean_summary(summary, 160)
                 
-                logger.info(f"Successfully summarized page: {page_url}")
+                logger.debug(f"Successfully summarized page: {page_url}")
                 return summary
             
             except openai.RateLimitError as e:
-                logger.error(f"OpenAI rate limit exceeded for {page_url}: {str(e)}")
                 return get_fallback_summary(soup, page_url, link_title, error_prefix="Rate limit exceeded: ")
             
             except openai.APIConnectionError as e:
-                logger.error("OpenAI connection error for %s: %s", page_url, str(e))
                 return get_fallback_summary(soup, page_url, link_title, error_prefix="Connection error: ")
             
             except openai.APIError as e:
-                logger.error("OpenAI API error for %s: %s", page_url, str(e))
                 return get_fallback_summary(soup, page_url, link_title, error_prefix="API error: ")
             
             except Exception as e:
-                logger.error(f"LLM error for {page_url}: {str(e)}")
-                # Fall back to alternative method
                 return get_fallback_summary(soup, page_url, link_title, error_prefix="Error: ")
         else:
             # No API key, use fallback
-            logger.warning(f"No API key available, using fallback for: {page_url}")
+            
             return get_fallback_summary(soup, page_url, link_title)
             
     except Exception as e:
@@ -1254,7 +1253,7 @@ def extract_site_description(soup, website_url):
     if meta_desc and meta_desc.get('content'):
         description = meta_desc.get('content').strip()
         if description:  # Any non-empty string is acceptable
-            logger.info("Using standard meta description for site description")
+            logger.debug("Using standard meta description for site description")
             return description
     
     # Only proceed to alternatives if standard meta description was not found or empty
@@ -1265,7 +1264,7 @@ def extract_site_description(soup, website_url):
     if og_desc and og_desc.get('content'):
         description = og_desc.get('content').strip()
         if description:
-            logger.info("Using Open Graph description for site description")
+            logger.debug("Using Open Graph description for site description")
             return description
     
     # Try Twitter description
@@ -1273,7 +1272,7 @@ def extract_site_description(soup, website_url):
     if twitter_desc and twitter_desc.get('content'):
         description = twitter_desc.get('content').strip()
         if description:
-            logger.info("Using Twitter description for site description")
+            logger.debug("Using Twitter description for site description")
             return description
     
     # Log that we're falling back to non-meta tag methods
@@ -1314,7 +1313,7 @@ def extract_site_description(soup, website_url):
                 # No good breaking point, just truncate
                 combined = combined[:200]
                 
-        logger.info("Using heading + paragraph for site description")
+        
         return combined
     
     # Just use headings if available
@@ -1322,7 +1321,7 @@ def extract_site_description(soup, website_url):
         description = headings[0]
         if len(description) > 200:
             description = description[:200]
-        logger.info("Using heading for site description")
+        
         return description
     
     # Just use first paragraph if available
@@ -1339,13 +1338,13 @@ def extract_site_description(soup, website_url):
             else:
                 description = description[:200]
                 
-        logger.info("Using first paragraph for site description")
+        
         return description
     
     # Last resort: use the title or domain
     if soup.title and soup.title.string:
         title = soup.title.string.strip()
-        logger.info("Using page title for site description")
+        
         return title
     
     # Ultimate fallback
@@ -1746,19 +1745,19 @@ def extract_internal_links(soup, website_url):
     
     # First, get URLs from sitemap
     sitemap_urls = get_sitemap_urls(website_url)
-    logger.info(f"Found {len(sitemap_urls)} URLs from sitemap")
+    logger.debug(f"Found {len(sitemap_urls)} URLs from sitemap")
     
     # Log some example URLs for debugging
     if sitemap_urls:
-        logger.info(f"Sample sitemap URLs: {sitemap_urls[:5]}")
-        logger.info(f"Total sitemap URLs to process: {len(sitemap_urls)}")
+        logger.debug(f"Sample sitemap URLs: {sitemap_urls[:5]}")
+        logger.debug(f"Total sitemap URLs to process: {len(sitemap_urls)}")
     
     # Add sitemap URLs to our list (including ALL URLs for now)
     for sitemap_url in sitemap_urls:
         # TEMPORARILY INCLUDE ALL URLs to see what we're missing
         # Skip only obvious image files, not URLs that might contain image extensions
         if sitemap_url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.ico')):
-            logger.info(f"Skipping obvious image file: {sitemap_url}")
+            logger.debug(f"Skipping obvious image file: {sitemap_url}")
             continue
             
         if sitemap_url not in unique_urls:
@@ -1804,12 +1803,10 @@ def extract_internal_links(soup, website_url):
     filtered_sitemap_urls = [url for url in sitemap_urls if url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.ico'))]
     content_sitemap_urls = [url for url in sitemap_urls if not url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.ico'))]
     
-    logger.info(f"Total internal links found: {len(internal_links)} (HTML: {len(internal_links) - len(content_sitemap_urls)}, Sitemap: {len(content_sitemap_urls)})")
-    logger.info(f"Sitemap filtering: {len(sitemap_urls)} total URLs, {len(filtered_sitemap_urls)} obvious images filtered out, {len(content_sitemap_urls)} content URLs kept")
+    
     
     # Log detailed breakdown
     content_urls = [link for link in internal_links if any(path in link['url'] for path in ['/blog/', '/article/', '/post/', '/news/', '/content/'])]
-    logger.info(f"Content URLs found: {len(content_urls)}")
     
     return internal_links
 
@@ -2306,14 +2303,13 @@ def send_otp():
                 server.send_message(msg)
                 server.quit()
                 
-                logger.info(f"OTP sent to {email}")
+                
                 
             except Exception as e:
                 logger.error(f"Failed to send email: {str(e)}")
                 return jsonify({"error": "Failed to send OTP email"}), 500
         else:
-            # For development - just log the OTP
-            logger.info(f"OTP for {email}: {otp}")
+            logger.warning("SMTP not configured; dev mode OTP for %s: %s", email, otp)
         
         return jsonify({"message": "OTP sent successfully"}), 200
         
@@ -2350,7 +2346,6 @@ def verify_otp():
         # OTP is valid - mark as verified
         otp_storage[email]['verified'] = True
         
-        logger.info(f"OTP verified for {email}")
         return jsonify({"message": "OTP verified successfully"}), 200
         
     except Exception as e:
@@ -2385,7 +2380,6 @@ def generate_llm_text():
             log_request(website_url, output_type, False, validation_error, time.time() - start_time)
             return jsonify({"error": validation_error}), 400
 
-        logger.info(f"Received request for URL: {website_url} with output type: {output_type}")
 
         # Check robots.txt for the main website URL
         if not check_robots_txt(website_url):
@@ -2393,7 +2387,7 @@ def generate_llm_text():
 
         # Fetch the main page content
         try:
-            logger.info("") # logger.info(f"Fetching main page: {website_url}")
+            
             response = requests.get(website_url, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()  # Raise an HTTPError for bad responses (4xx or 5xx)
         except requests.exceptions.Timeout:
@@ -2419,28 +2413,28 @@ def generate_llm_text():
             if is_generic_utility_url(urlparse(link['url']).path) or
                is_generic_link_text(link['description'])
         ]
-        logger.info("") #logger.info(f"Would have filtered out {len(filtered_out_links)} links")
+        
         if filtered_out_links:
-            logger.info(f"Sample filtered out links: {filtered_out_links[:5]}")
-        logger.info(f"Found {len(valid_links)} valid internal links after filtering.")
+            logger.debug(f"Sample filtered out links: {filtered_out_links[:5]}")
+        
         
         # Log detailed breakdown of valid links
         content_links = [link for link in valid_links if any(path in link['url'] for path in ['/blog/', '/article/', '/post/', '/news/', '/content/'])]
-        logger.info(f"Valid content links to process: {len(content_links)}")
+        
         logger.info("") # logger.info(f"Total valid links to process: {len(valid_links)}")
 
         if output_type == 'llms_txt':
-            logger.info("") #logger.info("Generating LLM Text (summarized)")
+            
             successful_links = []
             failed_links = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as executor:
                 future_to_link = {executor.submit(get_page_summary, link["url"], link["description"]): link for link in valid_links}
                 total_links = len(valid_links)
-                logger.info(f"Starting to process {total_links} links with {CONCURRENT_WORKERS} workers")
+                logger.debug(f"Starting to process {total_links} links with {CONCURRENT_WORKERS} workers")
                 
                 for i, future in enumerate(concurrent.futures.as_completed(future_to_link)):
                     if (i + 1) % 10 == 0:  # Log progress every 10 processed links
-                        logger.info(f"Processed {i + 1}/{total_links} links ({(i + 1)/total_links*100:.1f}%)")
+                        logger.debug(f"Processed {i + 1}/{total_links} links ({(i + 1)/total_links*100:.1f}%)")
                     link = future_to_link[future]
                     try:
                         summary = future.result()
@@ -2457,11 +2451,10 @@ def generate_llm_text():
                             "error": str(exc)
                         })
             
-            logger.info("") #logger.info("Formatting llms.txt content")
+            
             llms_text = format_llms_text(website_url, site_description, successful_links, failed_links)
             
-            logger.info("") #logger.info("Successfully generated llms.txt content")
-            logger.info("") #logger.info(f"Final processing summary: {len(successful_links)} successful, {len(failed_links)} failed out of {len(valid_links)} total links")
+            
             processing_time = time.time() - start_time
             total_words = sum(len(link.get("summary", "").split()) for link in successful_links)
             log_request(website_url, output_type, True, None, processing_time, total_words)
@@ -2473,7 +2466,7 @@ def generate_llm_text():
             })
 
         elif output_type == 'llms_full_txt':
-            logger.info("") #logger.info("Generating LLM Full Text (full content)")
+            
             successful_sections = []
             failed_sections = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as executor:
@@ -2508,10 +2501,10 @@ def generate_llm_text():
                             "error": str(exc)
                         })
             
-            logger.info("") #logger.info("Formatting llms-full.txt content")
+            
             llms_full_text_output = format_llms_full_text(website_url, site_description, successful_sections, failed_sections)  # This new function must be defined below
             
-            logger.info("") #logger.info("Successfully generated llms-full.txt content")
+            
             processing_time = time.time() - start_time
             total_words = sum(len(section.get("content", "").split()) for section in successful_sections)
             log_request(website_url, output_type, True, None, processing_time, total_words)
@@ -2523,7 +2516,7 @@ def generate_llm_text():
             })
 
         elif output_type == 'llms_both':
-            logger.info("Generating both LLM Text and Full Text")
+            
             
             # Generate summarized content
             successful_summary_links = []
@@ -2581,7 +2574,7 @@ def generate_llm_text():
                             "error": str(exc)
                         })
             
-            logger.info("") #logger.info("Formatting both llms.txt and llms-full.txt content")
+            
             llms_text = format_llms_text(website_url, site_description, successful_summary_links, failed_summary_links)
             llms_full_text_output = format_llms_full_text(website_url, site_description, successful_full_sections, failed_full_sections)
             
@@ -2595,7 +2588,7 @@ def generate_llm_text():
             
             zip_buffer.seek(0)
             
-            logger.info("Successfully generated both content types and created zip file")
+            logger.debug("Successfully generated both content types and created zip file")
             processing_time = time.time() - start_time
             total_words = sum(len(link.get("summary", "").split()) for link in successful_summary_links) + \
                          sum(len(section.get("content", "").split()) for section in successful_full_sections)
@@ -2645,7 +2638,7 @@ def parse_sitemap(sitemap_url):
         list: List of URLs from the sitemap
     """
     try:
-        logger.info("") #logger.info(f"Fetching sitemap: {sitemap_url}")
+        
         response = requests.get(sitemap_url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         
@@ -2669,18 +2662,18 @@ def parse_sitemap(sitemap_url):
                 if loc:
                     urls.append(loc.text.strip())
         
-        logger.info("") #logger.info(f"Found {len(urls)} URLs in sitemap")
+        
         
         # Debug: Log URL types
         content_urls = [url for url in urls if any(path in url for path in ['/blog/', '/article/', '/post/', '/news/', '/content/'])]
         image_urls = [url for url in urls if any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp'])]
         other_urls = [url for url in urls if not any(path in url for path in ['/blog/', '/article/', '/post/', '/news/', '/content/']) and not any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp'])]
         
-        logger.info("") #logger.info(f"URL breakdown: {len(content_urls)} content URLs, {len(image_urls)} image URLs, {len(other_urls)} other URLs")
+        
         if content_urls:
-            logger.info(f"Sample content URLs: {content_urls[:3]}")
+            logger.debug(f"Sample content URLs: {content_urls[:3]}")
         if image_urls:
-            logger.info(f"Sample image URLs: {image_urls[:3]}")
+            logger.debug(f"Sample image URLs: {image_urls[:3]}")
         
         return urls
         
@@ -2735,7 +2728,7 @@ def get_sitemap_urls(website_url):
         post_sitemap_url = f"{base_url}/post-sitemap.xml"
         response = requests.head(post_sitemap_url, timeout=5)
         if response.status_code == 200:
-            logger.info(f"Found post-sitemap.xml at {post_sitemap_url}")
+            logger.debug(f"Found post-sitemap.xml at {post_sitemap_url}")
             return parse_sitemap(post_sitemap_url)
     except:
         pass
@@ -2743,5 +2736,5 @@ def get_sitemap_urls(website_url):
     return []
 
 if __name__ == '__main__':
-    logger.info("Starting LLM Text Generator application")
-    app.run(debug=True) 
+        logger.debug("Starting LLM Text Generator application")
+        app.run(debug=True) 
