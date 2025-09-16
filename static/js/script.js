@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const processingOverlay = document.getElementById('processingOverlay');
     const processingDetail = document.getElementById('processingDetail');
     const progressBar = document.getElementById('progressBar');
+    const processingPercent = document.getElementById('processingPercent');
     // Toggle buttons for output type selection
     const toggleButtons = document.querySelectorAll('.toggle-btn');
     const userDetailsModal = document.getElementById('userDetailsModal');
@@ -30,6 +31,65 @@ document.addEventListener('DOMContentLoaded', () => {
     let userData = null;
     let pendingGenerationData = null;
     let selectedOutputType = 'llms_txt'; // Default output type
+
+    // Smooth progress animation state
+    let currentProgressValue = 0; // 0-100
+    let targetProgressValue = 0;  // 0-100
+    let progressAnimationFrame = null;
+    let lastProgressBumpTs = 0;
+
+    function setTargetProgress(percent) {
+        targetProgressValue = Math.max(0, Math.min(100, percent));
+        if (!progressAnimationFrame) {
+            progressAnimationFrame = requestAnimationFrame(stepSmoothProgress);
+        }
+    }
+
+    function stepSmoothProgress(timestamp) {
+        // Easing towards target for fluent visual
+        const delta = targetProgressValue - currentProgressValue;
+        const step = Math.sign(delta) * Math.max(0.2, Math.abs(delta) * 0.15);
+        if (Math.abs(delta) < 0.3) {
+            currentProgressValue = targetProgressValue;
+        } else {
+            currentProgressValue += step;
+        }
+        const pctText = `${Math.round(currentProgressValue)}%`;
+        progressBar.style.width = `${currentProgressValue.toFixed(1)}%`;
+        if (processingPercent) processingPercent.textContent = pctText;
+
+        // Gentle heartbeat when waiting (indeterminate feel), but cap below target
+        if (currentProcessingState) {
+            const now = performance.now();
+            if (now - lastProgressBumpTs > 1800 && currentProgressValue < Math.min(targetProgressValue, 95)) {
+                currentProgressValue = Math.min(currentProgressValue + 0.5, targetProgressValue);
+                lastProgressBumpTs = now;
+            }
+        }
+
+        if (currentProcessingState || Math.abs(targetProgressValue - currentProgressValue) > 0.1) {
+            progressAnimationFrame = requestAnimationFrame(stepSmoothProgress);
+        } else {
+            cancelAnimationFrame(progressAnimationFrame);
+            progressAnimationFrame = null;
+        }
+    }
+
+    function startSmoothProgress(initial = 2) {
+        currentProgressValue = 0;
+        targetProgressValue = 0;
+        lastProgressBumpTs = performance.now();
+        progressBar.style.width = '0%';
+        if (processingPercent) processingPercent.textContent = '0%';
+        currentProcessingState = true;
+        setTargetProgress(initial);
+    }
+
+    function completeSmoothProgress() {
+        setTargetProgress(100);
+        if (processingPercent) processingPercent.textContent = '100%';
+        currentProcessingState = false;
+    }
 
     // Session storage key for tracking visited tools
     const SESSION_STORAGE_KEY = 'util';
@@ -107,19 +167,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const data = getSessionStorage();
     }
 
-    // Initialize result_height in both cookie and localStorage
+    // Initialize result_height: always reset to 0 on page load
     function initializeResultHeightStorage() {
-        const cookieVal = getCookie('result_height');
-        const lsVal = localStorage.getItem('result_height');
-        if (cookieVal === null && lsVal === null) {
-            // Initialize both to 0
-            setCookie('result_height', '0');
-            localStorage.setItem('result_height', '0');
-        } else if (cookieVal !== null && lsVal === null) {
-            localStorage.setItem('result_height', String(cookieVal));
-        } else if (cookieVal === null && lsVal !== null) {
-            setCookie('result_height', String(lsVal));
-        }
+        setCookie('result_height', '0');
+        localStorage.setItem('result_height', '0');
     }
 
     // Function to load saved iframe height (prefer cookie, fallback to localStorage)
@@ -306,8 +357,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Function to update processing state and UI
     function setProcessingState(isProcessing, detail = null) {
-        // Prevent multiple simultaneous processing states
-        if (currentProcessingState === isProcessing) {
+        // Prevent duplicate start, but allow false path to run to ensure overlay/UI reset
+        if (currentProcessingState === isProcessing && isProcessing === true) {
             return;
         }
         
@@ -335,8 +386,13 @@ document.addEventListener('DOMContentLoaded', () => {
             downloadBtn.style.display = 'none';
             copyMessage.style.display = 'none';
             
+            // Reset stored iframe height for a fresh session
+            setCookie('result_height', '0');
+            localStorage.setItem('result_height', '0');
+            outputIframe.style.height = '0px';
+
             // Show processing overlay with animation
-            processingOverlay.classList.add('active');
+            processingOverlay.classList.add('show');
             
             // Update detail text if provided
             if (detail) {
@@ -345,11 +401,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 processingDetail.textContent = 'This may take a few moments';
             }
             
-            // Start progress animation
-            startProgressAnimation();
+            // Start smooth progress animation
+            startSmoothProgress(3);
         } else {
-            // Clear any existing progress animation
-            clearProgressAnimation();
+            // Complete smooth progress and stop RAF immediately
+            completeSmoothProgress();
+            if (progressAnimationFrame) {
+                cancelAnimationFrame(progressAnimationFrame);
+                progressAnimationFrame = null;
+            }
             
             // Reset button state
             generateBtn.disabled = false;
@@ -357,10 +417,11 @@ document.addEventListener('DOMContentLoaded', () => {
             generateBtn.classList.remove('processing');
             
             // Hide processing overlay
-            processingOverlay.classList.remove('active');
+            processingOverlay.classList.remove('show');
             
-            // Reset progress bar
+            // Reset progress bar and percent
             progressBar.style.width = '0%';
+            if (processingPercent) processingPercent.textContent = '0%';
         }
     }
     
@@ -674,6 +735,12 @@ document.addEventListener('DOMContentLoaded', () => {
             button.classList.add('active');
             // Update selected output type
             selectedOutputType = button.getAttribute('data-type');
+            // Adjust download button label based on mode
+            if (selectedOutputType === 'llms_both') {
+                downloadBtn.textContent = 'Download zip file';
+            } else {
+                downloadBtn.textContent = 'Download text file';
+            }
         });
     });
 
@@ -715,41 +782,20 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Function to start generation after OTP verification
+    // Function to start generation after OTP verification (batched, short requests)
     async function startGeneration() {
         if (!pendingGenerationData) return;
         
         const { url, outputType } = pendingGenerationData;
         
         // Set UI to processing state
-        setProcessingState(true, 'Fetching and processing website content...');
+        setProcessingState(true, 'Preparing...');
 
         try {
-            // Update processing detail after a delay to simulate progress
-            setTimeout(() => {
-                if (currentProcessingState) {
-                    processingDetail.textContent = 'Analyzing website structure...';
-                }
-            }, 3000);
-            
-            setTimeout(() => {
-                if (currentProcessingState) {
-                    processingDetail.textContent = 'Extracting internal links...';
-                }
-            }, 6000);
-            
-            setTimeout(() => {
-                if (currentProcessingState) {
-                    processingDetail.textContent = 'Generating summaries (this may take a while)...';
-                }
-            }, 9000);
-
-            // Send request to backend
-            const response = await fetch('/generate_llm_text', {
+            // Prepare job
+            const prepResp = await fetch('/prepare_generation', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     websiteUrl: url,
                     outputType: outputType,
@@ -757,45 +803,80 @@ document.addEventListener('DOMContentLoaded', () => {
                 })
             });
 
-            if (response.ok) {
-                completeProgressAnimation();
-                setProcessingState(false);
-
-                // Handle JSON response
-                const result = await response.json();
-                
-                if (result.is_zip_mode) {
-                    // Both mode - store zip data and show combined content
-                    const zipData = result.zip_data;
-                    const zipBytes = new Uint8Array(zipData.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-                    window.storedZipBlob = new Blob([zipBytes], { type: 'application/zip' });
-                    
-                    // Show combined content in iframe
-                    const combinedOutput = `=== SUMMARIZED CONTENT ===\n\n${result.llms_text}\n\n=== FULL TEXT CONTENT ===\n\n${result.llms_full_text}`;
-                    displayContentInIframe(combinedOutput);
-                    statusMessage.textContent = 'Both LLM Text and Full Text generated successfully! Click download to get the zip file with separate .txt files.';
-                    statusMessage.className = 'status-message status-success';
-                } else if (result.llms_text) {
-                    displayContentInIframe(result.llms_text);
-                    statusMessage.textContent = 'LLM Text generated successfully!';
-                    statusMessage.className = 'status-message status-success';
-                } else if (result.llms_full_text) {
-                    displayContentInIframe(result.llms_full_text);
-                    statusMessage.textContent = 'LLM Full Text generated successfully!';
-                    statusMessage.className = 'status-message status-success';
-                } else {
-                    showError('Unexpected response format from server.');
-                }
-                copyBtn.style.display = 'inline-block';
-                downloadBtn.style.display = 'inline-block';
-            } else {
-                const errorData = await response.json();
-                showError(errorData.error || 'An unknown error occurred.');
+            if (!prepResp.ok) {
+                const err = await prepResp.json().catch(() => ({}));
+                showError(err.error || 'Failed to prepare generation');
+                return;
             }
-            
+
+            const { job_id, total } = await prepResp.json();
+
+            // Process in batches
+            startSmoothProgress(5);
+            let processed = 0;
+            const batchSize = 10;
+            processingDetail.textContent = `Processing 0/${total} links...`;
+
+            while (processed < total && currentProcessingState) {
+                const resp = await fetch('/process_batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ job_id: job_id, start: processed, size: batchSize })
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    showError(err.error || 'Batch failed');
+                    setProcessingState(false);
+                    return;
+                }
+                const data = await resp.json();
+                processed = data.processed;
+                const pct = total ? Math.max(0, Math.min(100, Math.floor((processed / total) * 96))) : 50;
+                setTargetProgress(pct);
+                processingDetail.textContent = `Processing ${processed}/${total} links...`;
+            }
+
+            // Finalize
+            processingDetail.textContent = 'Finalizing results...';
+            const finalResp = await fetch(`/finalize/${job_id}`);
+            if (!finalResp.ok) {
+                const err = await finalResp.json().catch(() => ({}));
+                showError(err.error || 'Failed to finalize results');
+                setProcessingState(false);
+                return;
+            }
+            const result = await finalResp.json();
+            completeSmoothProgress();
+            setProcessingState(false);
+            if (result.is_zip_mode) {
+                const zipData = result.zip_data;
+                const zipBytes = new Uint8Array(zipData.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+                window.storedZipBlob = new Blob([zipBytes], { type: 'application/zip' });
+                const combinedOutput = `=== SUMMARIZED CONTENT ===\n\n${result.llms_text}\n\n=== FULL TEXT CONTENT ===\n\n${result.llms_full_text}`;
+                displayContentInIframe(combinedOutput);
+                statusMessage.textContent = 'Both LLM Text and Full Text generated successfully! Click download to get the zip file with separate .txt files.';
+                statusMessage.className = 'status-message status-success';
+                downloadBtn.textContent = 'Download zip file';
+            } else if (result.llms_text) {
+                displayContentInIframe(result.llms_text);
+                statusMessage.textContent = 'LLM Text generated successfully!';
+                statusMessage.className = 'status-message status-success';
+                downloadBtn.textContent = 'Download text file';
+            } else if (result.llms_full_text) {
+                displayContentInIframe(result.llms_full_text);
+                statusMessage.textContent = 'LLM Full Text generated successfully!';
+                statusMessage.className = 'status-message status-success';
+                downloadBtn.textContent = 'Download text file';
+            } else {
+                showError('Unexpected result format');
+            }
+            copyBtn.style.display = 'inline-block';
+            downloadBtn.style.display = 'inline-block';
+
         } catch (error) {
             console.error('Error:', error);
             showError(error.message);
+            setProcessingState(false);
         }
     }
     
@@ -858,7 +939,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.body.removeChild(downloadLink);
                 window.URL.revokeObjectURL(downloadUrl);
                 
-                statusMessage.textContent = 'Zip file downloaded successfully!';
+                statusMessage.textContent = 'Zip download started.';
                 statusMessage.className = 'status-message status-success';
             } else {
                 showError('No zip file available. Please generate content first.');
@@ -918,6 +999,11 @@ document.addEventListener('DOMContentLoaded', () => {
         copyBtn.style.display = 'none';
         downloadBtn.style.display = 'none';
         copyMessage.style.display = 'none';
+        
+        // Reset saved iframe height and collapse iframe
+        setCookie('result_height', '0');
+        localStorage.setItem('result_height', '0');
+        outputIframe.style.height = '0px';
         
         // Reset to default output type (summarized)
         selectedOutputType = 'llms_txt';

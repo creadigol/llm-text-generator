@@ -23,6 +23,8 @@ import random
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import threading
+import uuid
 
 # Configure logging
 logging.basicConfig(
@@ -100,6 +102,10 @@ app = Flask(__name__)
 
 # In-memory storage for OTPs (in production, use Redis or database)
 otp_storage = {}
+
+# In-memory job store for batched processing
+jobs = {}
+jobs_lock = threading.Lock()
 
 
 # Enhanced Error Handlers
@@ -194,6 +200,243 @@ def robots_txt():
     resp.headers['Content-Type'] = 'text/plain'
     resp.headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive, nosnippet, noimageindex'
     return resp
+
+# Prepare generation: extract links quickly and return job_id
+@app.route('/prepare_generation', methods=['POST'])
+def prepare_generation():
+    try:
+        data = request.get_json()
+        website_url = data.get('websiteUrl')
+        output_type = data.get('outputType', 'llms_txt')
+        user_data = data.get('userData')
+
+        if not website_url:
+            return jsonify({"error": "Website URL is required"}), 400
+
+        # OTP gate only if provided
+        if user_data:
+            email = user_data.get('email')
+            if email not in otp_storage or not otp_storage[email].get('verified', False):
+                return jsonify({"error": "Please verify your email first"}), 403
+
+        # Validate URL
+        is_valid, validation_error = validate_url(website_url)
+        if not is_valid:
+            return jsonify({"error": validation_error}), 400
+
+        # robots.txt
+        if not check_robots_txt(website_url):
+            return jsonify({"error": f"Access to {website_url} is disallowed by robots.txt"}), 403
+
+        # Fetch main page and extract links
+        response = requests.get(website_url, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        site_description = extract_site_description(soup, website_url)
+        internal_links = extract_internal_links(soup, website_url)
+        valid_links = internal_links
+
+        job_id = _create_job(website_url, output_type)
+        with jobs_lock:
+            jobs[job_id]["links"] = valid_links
+            jobs[job_id]["site_description"] = site_description
+
+        return jsonify({
+            "job_id": job_id,
+            "total": len(valid_links)
+        }), 200
+
+    except requests.exceptions.Timeout:
+        return jsonify({"error": f"Timeout accessing: {website_url}"}), 504
+    except requests.exceptions.ConnectionError:
+        return jsonify({"error": f"Connection error: {website_url}"}), 503
+    except requests.exceptions.HTTPError as e:
+        return jsonify({"error": f"HTTP error {e.response.status_code} for {website_url}"}), e.response.status_code
+    except Exception as e:
+        logger.error(f"prepare_generation error: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+# Process a batch of links
+@app.route('/process_batch', methods=['POST'])
+def process_batch():
+    try:
+        data = request.get_json()
+        job_id = data.get('job_id')
+        start = int(data.get('start', 0))
+        size = int(data.get('size', 10))
+        if not job_id:
+            return jsonify({"error": "job_id is required"}), 400
+
+        job = _get_job(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+
+        links = job["links"]
+        total = len(links)
+        if start >= total:
+            return jsonify({
+                "items": [],
+                "processed": job["processed"],
+                "total": total
+            }), 200
+
+        end = min(total, start + size)
+        batch = links[start:end]
+        output_type = job["output_type"]
+
+        if output_type == 'llms_txt':
+            successful_links = []
+            failed_links = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as executor:
+                future_to_link = {executor.submit(get_page_summary, link["url"], link["description"]): link for link in batch}
+                for future in concurrent.futures.as_completed(future_to_link):
+                    link = future_to_link[future]
+                    try:
+                        summary = future.result()
+                        successful_links.append({"summary": summary, "url": link["url"], "title": link["description"]})
+                    except Exception as exc:
+                        failed_links.append({"url": link["url"], "title": link["description"], "error": str(exc)})
+            with jobs_lock:
+                job["successful_links"].extend(successful_links)
+                job["failed_links"].extend(failed_links)
+                job["processed"] = max(job["processed"], end)
+            items = {"successful_links": successful_links, "failed_links": failed_links}
+
+        elif output_type == 'llms_full_txt':
+            successful_sections = []
+            failed_sections = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as executor:
+                fetch_and_extract_func = partial(fetch_page_and_extract_full_content)
+                future_to_link = {executor.submit(fetch_and_extract_func, link["url"], link["description"]): link for link in batch}
+                for future in concurrent.futures.as_completed(future_to_link):
+                    link = future_to_link[future]
+                    try:
+                        result = future.result()
+                        if isinstance(result, dict) and 'content' in result:
+                            successful_sections.append({"title": link["description"], "url": link["url"], "content": result['content'], "metadata": result['metadata']})
+                        else:
+                            successful_sections.append({"title": link["description"], "url": link["url"], "content": result})
+                    except Exception as exc:
+                        failed_sections.append({"title": link["description"], "url": link["url"], "error": str(exc)})
+            with jobs_lock:
+                job["successful_sections"].extend(successful_sections)
+                job["failed_sections"].extend(failed_sections)
+                job["processed"] = max(job["processed"], end)
+            items = {"successful_sections": successful_sections, "failed_sections": failed_sections}
+
+        elif output_type == 'llms_both':
+            successful_summary_links = []
+            failed_summary_links = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as executor:
+                future_to_link = {executor.submit(get_page_summary, link["url"], link["description"]): link for link in batch}
+                for future in concurrent.futures.as_completed(future_to_link):
+                    link = future_to_link[future]
+                    try:
+                        summary = future.result()
+                        successful_summary_links.append({"summary": summary, "url": link["url"], "title": link["description"]})
+                    except Exception as exc:
+                        failed_summary_links.append({"url": link["url"], "title": link["description"], "error": str(exc)})
+
+            successful_full_sections = []
+            failed_full_sections = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as executor:
+                fetch_and_extract_func = partial(fetch_page_and_extract_full_content)
+                future_to_link = {executor.submit(fetch_and_extract_func, link["url"], link["description"]): link for link in batch}
+                for future in concurrent.futures.as_completed(future_to_link):
+                    link = future_to_link[future]
+                    try:
+                        result = future.result()
+                        if isinstance(result, dict) and 'content' in result:
+                            successful_full_sections.append({"title": link["description"], "url": link["url"], "content": result['content'], "metadata": result['metadata']})
+                        else:
+                            successful_full_sections.append({"title": link["description"], "url": link["url"], "content": result})
+                    except Exception as exc:
+                        failed_full_sections.append({"title": link["description"], "url": link["url"], "error": str(exc)})
+
+            with jobs_lock:
+                job["successful_summary_links"].extend(successful_summary_links)
+                job["failed_summary_links"].extend(failed_summary_links)
+                job["successful_full_sections"].extend(successful_full_sections)
+                job["failed_full_sections"].extend(failed_full_sections)
+                job["processed"] = max(job["processed"], end)
+            items = {
+                "successful_summary_links": successful_summary_links,
+                "failed_summary_links": failed_summary_links,
+                "successful_full_sections": successful_full_sections,
+                "failed_full_sections": failed_full_sections
+            }
+        else:
+            return jsonify({"error": "Invalid outputType specified"}), 400
+
+        return jsonify({
+            "items": items,
+            "processed": end,
+            "total": total,
+            "site_description": job["site_description"]
+        }), 200
+
+    except Exception as e:
+        logger.error(f"process_batch error: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/finalize/<job_id>', methods=['GET'])
+def finalize(job_id):
+    job = _get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    website_url = job["website_url"]
+    site_description = job["site_description"]
+    output_type = job["output_type"]
+
+    if output_type == 'llms_txt':
+        llms_text = format_llms_text(website_url, site_description, job["successful_links"], job["failed_links"])
+        return jsonify({"llms_text": llms_text}), 200
+    elif output_type == 'llms_full_txt':
+        llms_full_text = format_llms_full_text(website_url, site_description, job["successful_sections"], job["failed_sections"])
+        return jsonify({"llms_full_text": llms_full_text}), 200
+    elif output_type == 'llms_both':
+        llms_text = format_llms_text(website_url, site_description, job["successful_summary_links"], job["failed_summary_links"])
+        llms_full_text_output = format_llms_full_text(website_url, site_description, job["successful_full_sections"], job["failed_full_sections"])
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            zip_file.writestr('llms.txt', llms_text.encode('utf-8'))
+            zip_file.writestr('llms-full.txt', llms_full_text_output.encode('utf-8'))
+        zip_buffer.seek(0)
+        return jsonify({
+            "llms_text": llms_text,
+            "llms_full_text": llms_full_text_output,
+            "zip_data": zip_buffer.getvalue().hex(),
+            "is_zip_mode": True
+        }), 200
+    else:
+        return jsonify({"error": "Invalid outputType specified"}), 400
+# -------- Batched processing helpers --------
+def _create_job(website_url: str, output_type: str):
+    job_id = uuid.uuid4().hex
+    with jobs_lock:
+        jobs[job_id] = {
+            "website_url": website_url,
+            "output_type": output_type,
+            "site_description": None,
+            "links": [],
+            "created_at": datetime.now().isoformat(),
+            "processed": 0,
+            # Accumulators
+            "successful_links": [],
+            "failed_links": [],
+            "successful_sections": [],
+            "failed_sections": [],
+            "successful_summary_links": [],
+            "failed_summary_links": [],
+            "successful_full_sections": [],
+            "failed_full_sections": []
+        }
+    return job_id
+
+def _get_job(job_id: str):
+    with jobs_lock:
+        return jobs.get(job_id)
 
 def validate_url(url):
     """

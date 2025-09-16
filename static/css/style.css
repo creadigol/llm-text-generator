@@ -305,6 +305,13 @@ body {
   transition: width 0.3s ease;
 }
 
+.processing-percent {
+  margin-top: 10px;
+  font-size: 14px;
+  color: #333;
+  font-weight: 600;
+}
+
 /* Modal Styles */
 .custom-modal {
   position: fixed;
