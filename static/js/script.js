@@ -472,6 +472,12 @@ document.addEventListener('DOMContentLoaded', () => {
         statusMessage.textContent = `Error: ${message}`;
         statusMessage.className = 'status-message status-error';
         
+        // Ensure generated output section is hidden on errors (e.g., invalid URL)
+        outputSection.style.setProperty('display', 'none', 'important');
+        copyBtn.style.display = 'none';
+        downloadBtn.style.display = 'none';
+        copyMessage.style.display = 'none';
+        
         // Only show error in iframe for generation-related errors, not for validation/authentication errors
         if (!message.includes('OTP') && !message.includes('email') && !message.includes('verify') && 
             !message.includes('Invalid URL') && !message.includes('URL format') && 
