@@ -514,7 +514,7 @@ body {
   margin-top: 12px;
   flex-wrap: nowrap;
   max-width: 100%;
-  /* keep on one line without showing scrollbars by sizing responsively */
+  /* Remove overflow and padding to prevent scroll */
 }
 
 .otp-input {
@@ -527,7 +527,9 @@ body {
   font-size: 1.5rem;
   transition: all 0.2s ease;
   background: #ffffff;
-  flex: 0 0 3rem;
+  flex: 1 1 auto;
+  max-width: 3rem;
+  min-width: 2rem;
 }
 
 .otp-input:focus {
@@ -547,25 +549,79 @@ body {
   color: inherit;
 }
 
-/* Make OTP inputs fit comfortably on small screens */
-@media (max-width: 420px) {
-  .spinner-container {
-    min-width: 90vw;
-    padding: 24px;
-  }
+/* Mobile OTP Input Responsive Design - No Scroll */
+@media (max-width: 480px) {
   .otp-input-container {
-    gap: 6px;
+    gap: 2px;
+    justify-content: space-between;
+    padding: 0;
   }
   .otp-input {
-    width: 2.6rem;
-    height: 2.6rem;
-    flex: 0 0 2.6rem;
-    font-size: 1.2rem;
-    margin: 0 0.35rem;
+    width: 2.2rem;
+    height: 2.2rem;
+    flex: 1 1 auto;
+    font-size: 1rem;
+    margin: 0 1px;
+    max-width: 2.2rem;
+    min-width: 1.8rem;
   }
   .otp-separator {
     margin: 0;
-    font-size: inherit;
+    font-size: 0.8rem;
+  }
+}
+
+@media (max-width: 400px) {
+  .otp-input-container {
+    gap: 1px;
+  }
+  .otp-input {
+    width: 2rem;
+    height: 2rem;
+    flex: 1 1 auto;
+    font-size: 0.9rem;
+    margin: 0 0.5px;
+    max-width: 2rem;
+    min-width: 1.6rem;
+  }
+  .otp-separator {
+    font-size: 0.7rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .otp-input-container {
+    gap: 0.5px;
+  }
+  .otp-input {
+    width: 1.8rem;
+    height: 1.8rem;
+    flex: 1 1 auto;
+    font-size: 0.8rem;
+    margin: 0 0.25px;
+    max-width: 1.8rem;
+    min-width: 1.4rem;
+  }
+  .otp-separator {
+    font-size: 0.6rem;
+  }
+}
+
+@media (max-width: 320px) {
+  .otp-input-container {
+    gap: 0;
+  }
+  .otp-input {
+    width: 1.6rem;
+    height: 1.6rem;
+    flex: 1 1 auto;
+    font-size: 0.7rem;
+    margin: 0;
+    max-width: 1.6rem;
+    min-width: 1.2rem;
+  }
+  .otp-separator {
+    font-size: 0.5rem;
   }
 }
 
@@ -683,14 +739,70 @@ body {
   .action-buttons {
     flex-direction: column;
   }
+  
+  /* Modal improvements for mobile */
+  .modal {
+    margin: 10px;
+    max-width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+  }
+  
+  .modal-body {
+    padding: 15px;
+  }
+  
+  .button-container {
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .button-container .submit-btn,
+  .button-container .resend-btn {
+    width: 100%;
+    min-width: auto;
+  }
+}
 
+@media (max-width: 480px) {
+  .modal {
+    margin: 5px;
+    max-width: calc(100vw - 10px);
+    max-height: calc(100vh - 10px);
+    width: calc(100vw - 10px);
+  }
+  
+  .modal-body {
+    padding: 12px;
+    overflow-x: hidden; /* Prevent horizontal scroll */
+  }
+  
+  .modal-title {
+    font-size: 20px;
+  }
+  
+  .form-label {
+    font-size: 13px;
+  }
+  
+  .form-input {
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+  
   .toggle-btn,
   .input-row input,
   .input-row .btn,
   .action-buttons .btn {
     width: 100%;
   }
+  
+  /* Ensure OTP container fits perfectly */
+  .otp-input-container {
+    width: 100%;
+    box-sizing: border-box;
+  }
+}
 
+@media (max-width: 768px) {
   .modal-dialog {
     max-width: 95%;
     margin: 1rem;

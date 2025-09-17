@@ -409,6 +409,82 @@ def finalize(job_id):
     site_description = job["site_description"]
     output_type = job["output_type"]
 
+    # Prepare a title map using existing titles where good, fetching only when needed
+    def _build_title_map(items):
+        title_map = {}
+        if not items:
+            return title_map
+
+        # Decide which URLs truly need resolution
+        urls_to_fetch = []
+        for it in items:
+            u = it.get("url")
+            t = (it.get("title") or "").strip()
+            if not u:
+                continue
+            if t and not _is_slug_like(t):
+                # Keep existing title
+                title_map[u] = t
+            else:
+                urls_to_fetch.append(u)
+
+        # Fetch missing/sluggy titles in parallel
+        if urls_to_fetch:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as executor:
+                future_to_url = {executor.submit(get_page_title, u): u for u in set(urls_to_fetch)}
+                for future in concurrent.futures.as_completed(future_to_url):
+                    u = future_to_url[future]
+                    try:
+                        title_map[u] = future.result()
+                    except Exception:
+                        title_map[u] = extract_url_title(urlparse(u).path)
+        return title_map
+
+    # Collect all URLs that need titles depending on output_type
+    if output_type == 'llms_txt':
+        all_items = job["successful_links"] + job["failed_links"]
+        title_map = _build_title_map(all_items)
+        # Apply titles
+        for item in job["successful_links"]:
+            u = item.get("url")
+            if u in title_map:
+                item["title"] = title_map[u]
+        for item in job["failed_links"]:
+            u = item.get("url")
+            if u in title_map:
+                item["title"] = title_map[u]
+    elif output_type == 'llms_full_txt':
+        all_items = job["successful_sections"] + job["failed_sections"]
+        title_map = _build_title_map(all_items)
+        for item in job["successful_sections"]:
+            u = item.get("url")
+            if u in title_map:
+                item["title"] = title_map[u]
+        for item in job["failed_sections"]:
+            u = item.get("url")
+            if u in title_map:
+                item["title"] = title_map[u]
+    elif output_type == 'llms_both':
+        items_summary = job["successful_summary_links"] + job["failed_summary_links"]
+        items_full = job["successful_full_sections"] + job["failed_full_sections"]
+        title_map = _build_title_map(items_summary + items_full)
+        for item in job["successful_summary_links"]:
+            u = item.get("url")
+            if u in title_map:
+                item["title"] = title_map[u]
+        for item in job["failed_summary_links"]:
+            u = item.get("url")
+            if u in title_map:
+                item["title"] = title_map[u]
+        for item in job["successful_full_sections"]:
+            u = item.get("url")
+            if u in title_map:
+                item["title"] = title_map[u]
+        for item in job["failed_full_sections"]:
+            u = item.get("url")
+            if u in title_map:
+                item["title"] = title_map[u]
+
     if output_type == 'llms_txt':
         llms_text = format_llms_text(website_url, site_description, job["successful_links"], job["failed_links"])
         return jsonify({"llms_text": llms_text}), 200
@@ -1188,76 +1264,113 @@ def extract_main_content(soup):
         
     return main_content
 
-def clean_summary(summary, max_words=160):
+def clean_summary(summary, max_chars=160):
     """
-    Clean and truncate a summary to ensure it's concise and ends at a natural point.
-    Updated to handle word-based truncation for 160-word summaries.
-    
-    Args:
-        summary (str): The summary to clean
-        max_words (int): Maximum number of words for the summary
-        
-    Returns:
-        str: Cleaned and properly truncated summary
+    Generate a concise summary capped at max_chars (characters, not words).
+    Prefer extractive, sentence-bound output using Luhn summarization when available;
+    otherwise fall back to punctuation-aware trimming within the character budget.
     """
     if not summary:
         return summary
-        
-    # First, clean up any extra whitespace
-    summary = ' '.join(summary.split())
-    
-    # Remove any artificially added ellipses at the end that aren't part of a sentence
-    if summary.endswith('...') and not summary[:-3].endswith('.'):
-        summary = summary[:-3].strip()
-    
-    # Split into words
-    words = summary.split()
-    
-    # If it's within word limits, return as is
-    if len(words) <= max_words:
+
+    # Normalize whitespace and remove dangling artificial ellipses
+    text = ' '.join(summary.split())
+    if text.endswith('...') and not text[:-3].endswith('.'):
+        text = text[:-3].strip()
+
+    # If already short, return as-is
+    if len(text) <= max_chars:
+        return text
+
+    # Try Luhn extractive summarization first
+    try:
+        from sumy.parsers.plaintext import PlaintextParser as _PlaintextParser
+        from sumy.nlp.tokenizers import Tokenizer as _Tokenizer
+        from sumy.summarizers.luhn import LuhnSummarizer as _LuhnSummarizer
+
+        parser = _PlaintextParser.from_string(text, _Tokenizer("english"))
+        summarizer = _LuhnSummarizer()
+
+        candidate_sentences = summarizer(parser.document, 30)
+        selected = []
+        length = 0
+
+        for sent in candidate_sentences:
+            sent_text = str(sent).strip()
+            tentative = (length + (1 if selected else 0) + len(sent_text))
+            if tentative <= max_chars:
+                selected.append(sent_text)
+                length = tentative
+            else:
+                break
+
+        if selected:
+            return ' '.join(selected)
+    except Exception:
+        # Fall back to manual trimming logic
+        pass
+
+    # Fallback: punctuation-aware trimming up to max_chars
+    budget = max_chars
+    if len(text) <= budget:
+        return text
+
+    slice_text = text[:budget]
+
+    # Prefer sentence boundary
+    for i in range(budget - 1, max(budget - 40, 0), -1):
+        if slice_text[i] in '.!?':
+            return slice_text[:i + 1].strip()
+
+    # Then phrase boundary
+    for i in range(budget - 1, max(budget - 40, 0), -1):
+        if slice_text[i] in ',;:':
+            return slice_text[:i + 1].strip()
+
+    # Then whitespace boundary
+    last_space = slice_text.rfind(' ')
+    if last_space > 0:
+        return slice_text[:last_space].rstrip(' .,;:')
+
+    # Hard cut
+    return slice_text.rstrip()
+
+import threading
+import random
+from threading import Lock
+
+def _is_slug_like(text):
+    if not text:
+        return False
+    t = text.strip()
+    if ' ' not in t and ('-' in t or '_' in t):
+        return True
+    if len(t.split()) <= 2 and t.lower() == t and any(ch.isalpha() for ch in t):
+        return True
+    return False
+
+def _strip_leading_title_echo(summary, title):
+    if not summary or not title:
         return summary
-    
-    # Find the best point to cut the summary
-    # Start looking from 10 words before the max_words to ensure we find a good break
-    safety_margin = 10
-    cut_search_start = max(0, max_words - safety_margin)
-    
-    # First priority: Find a sentence end (period, exclamation, question mark)
-    best_end = -1
-    for i in range(cut_search_start, min(max_words, len(words))):
-        word = words[i]
-        if word.endswith(('.', '!', '?')):
-            best_end = i + 1
-            break
-    
-    # If we found a good sentence end, use it
-    if best_end > 0:
-        return ' '.join(words[:best_end]).strip()
-    
-    # Second priority: Find a phrase break (comma, semicolon, colon)
-    for i in range(cut_search_start, min(max_words, len(words))):
-        word = words[i]
-        if word.endswith((',', ';', ':')):
-            best_end = i + 1
-            break
-    
-    # If we found a phrase break, use it
-    if best_end > 0:
-        return ' '.join(words[:best_end]).strip()
-    
-    # Third priority: Find a conjunction or preposition
-    conjunctions = ['and', 'but', 'or', 'nor', 'for', 'so', 'yet', 'with', 'to']
-    for i in range(cut_search_start, min(max_words, len(words))):
-        if words[i].lower() in conjunctions:
-            best_end = i + 1
-            break
-    
-    # If we found a conjunction, cut there
-    if best_end > 0:
-        return ' '.join(words[:best_end]).strip()
-    
-    # Last resort: Cut at max_words
-    return ' '.join(words[:max_words]).strip()
+    s = summary.strip()
+    t = title.strip()
+    if not t:
+        return s
+    if s.lower().startswith(t.lower()):
+        trimmed = s[len(t):].lstrip(" -:|,.;—–")
+        return trimmed if trimmed else s
+    return s
+
+try:
+    _max_llm = max(1, min(CONCURRENT_WORKERS, 8))
+except Exception:
+    _max_llm = 8
+LLM_SEMAPHORE = threading.BoundedSemaphore(value=_max_llm)
+
+# Temporary test: restrict number of OpenAI calls (skip to fallback after N)
+OPENAI_CALL_TEST_LIMIT = 10
+_openai_call_count = 0
+_openai_call_lock: Lock = Lock()
 
 def get_page_summary(page_url, link_title=None):
     """
@@ -1273,7 +1386,7 @@ def get_page_summary(page_url, link_title=None):
     try:
         # Check if we should respect robots.txt
         if not check_robots_txt(page_url):
-            return f"Respecting robots.txt: Not allowed to access {page_url}"
+            raise PermissionError(f"Respecting robots.txt: Not allowed to access {page_url}")
         
         # Fetch the page
         logger.debug(f"Fetching page: {page_url}")
@@ -1282,17 +1395,17 @@ def get_page_summary(page_url, link_title=None):
             response.raise_for_status()
         except requests.exceptions.Timeout:
             logger.error(f"Timeout error fetching {page_url}")
-            return f"Timeout accessing: {page_url}"
+            raise requests.exceptions.Timeout(f"Timeout accessing: {page_url}")
         except requests.exceptions.ConnectionError:
             logger.error(f"Connection error fetching {page_url}")
-            return f"Connection error: {page_url}"
+            raise requests.exceptions.ConnectionError(f"Connection error: {page_url}")
         except requests.exceptions.HTTPError as e:
             status_code = e.response.status_code if e.response else "unknown"
             logger.error(f"HTTP error {status_code} fetching {page_url}")
-            return f"HTTP error {status_code}: {page_url}"
+            raise requests.exceptions.HTTPError(f"HTTP error {status_code}: {page_url}")
         except requests.exceptions.RequestException as e:
             logger.error(f"Request error for {page_url}: {str(e)}")
-            return f"Error accessing: {page_url}"
+            raise requests.exceptions.RequestException(f"Error accessing: {page_url}")
         
         # Parse HTML
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -1305,66 +1418,101 @@ def get_page_summary(page_url, link_title=None):
             logger.warning(f"No main content found for {page_url}, using fallback")
             return get_fallback_summary(soup, page_url, link_title)
         
-        # Attempt to summarize using LLM
+        # Attempt to summarize using LLM (respect temporary call restriction)
         if OPENAI_API_KEY:
+            # Check and increment the test limit safely
+            with _openai_call_lock:
+                if _openai_call_count >= OPENAI_CALL_TEST_LIMIT:
+                    logger.info(f"LLM call skipped by test limit for: {page_url}; using fallback")
+                    return get_fallback_summary(soup, page_url, link_title)
+                globals()['_openai_call_count'] = _openai_call_count + 1
             try:
                 logger.debug(f"Calling LLM for page: {page_url}")
                 
                 # Add a small delay to avoid rate limiting
                 time.sleep(API_CALL_DELAY)
                 
-                # Create a focused prompt for 160-word summaries
-                context = f"The page is titled '{link_title}'. " if link_title else ""
+                # Derive a better title from soup without extra network; fallback to link_title
+                effective_title = None
+                try:
+                    ogt = soup.find('meta', attrs={'property': 'og:title'})
+                    if ogt and ogt.get('content'):
+                        effective_title = ogt.get('content').strip()
+                    if not effective_title:
+                        twt = soup.find('meta', attrs={'name': 'twitter:title'})
+                        if twt and twt.get('content'):
+                            effective_title = twt.get('content').strip()
+                    if not effective_title:
+                        h = soup.find(['h1', 'h2'])
+                        if h:
+                            txt = h.get_text(strip=True)
+                            if txt and len(txt) > 3:
+                                effective_title = txt
+                    if not effective_title and soup.title and soup.title.string:
+                        t = soup.title.string.strip()
+                        if t:
+                            effective_title = t
+                except Exception:
+                    effective_title = None
+                if not effective_title:
+                    effective_title = link_title
+                else:
+                    # Seed title cache to avoid refetching during finalize
+                    try:
+                        page_title_cache[page_url] = effective_title
+                    except Exception:
+                        pass
+                # Build context only if not slug-like
+                context = f"The page is titled '{effective_title}'. " if (effective_title and not _is_slug_like(effective_title)) else ""
                 prompt = (
-                    f"{context}Provide a comprehensive 160-word summary of the following web page content. "
-                    f"Include the main topics, key points, and important details. "
-                    f"Make it informative, well-structured, and engaging. "
-                    f"Focus on what makes this page valuable to readers:\n\n{page_content}"
+                    f"{context}Provide a concise summary of the following web page content. "
+                    f"IMPORTANT: The summary MUST be ≤ 160 characters in total. "
+                    f"Use 1–2 complete sentences, factual, no fluff or lists. "
+                    f"Focus on the main topic and key insight:\n\n{page_content}"
                 )
                 
-                # Call OpenAI API with settings for 160-word summaries
-                response = openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that creates comprehensive 160-word summaries of web page content. Focus on key information, main topics, and valuable insights."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=300,  # Increased for 160-word summaries
-                    temperature=0.4,  # Slightly higher for more creative summaries
-                    presence_penalty=0.0  # Neutral to allow natural flow
-                )
-                
-                # Extract summary from response
-                summary = response.choices[0].message.content.strip()
-                
-                # Clean and properly truncate the summary to 160 words
-                summary = clean_summary(summary, 160)
-                
-                logger.debug(f"Successfully summarized page: {page_url}")
-                return summary
-            
-            except openai.RateLimitError as e:
-                return get_fallback_summary(soup, page_url, link_title, error_prefix="Rate limit exceeded: ")
-            
-            except openai.APIConnectionError as e:
-                return get_fallback_summary(soup, page_url, link_title, error_prefix="Connection error: ")
-            
-            except openai.APIError as e:
-                return get_fallback_summary(soup, page_url, link_title, error_prefix="API error: ")
+                # Call LLM with retries and concurrency throttle
+                attempts = 1
+                for i in range(attempts):
+                    try:
+                        with LLM_SEMAPHORE:
+                            response = openai_client.chat.completions.create(
+                                model="gpt-4o",
+                                messages=[
+                                    {"role": "system", "content": "You produce concise, factual 1–2 sentence summaries less than 160 characters. Include key information and avoid fluff or lists."},
+                                    {"role": "user", "content": prompt}
+                                ],
+                                max_tokens=180,
+                                temperature=0.4,
+                                presence_penalty=0.0
+                            )
+                        summary = response.choices[0].message.content.strip()
+                        # Post-process: remove title echo and trim to 160 chars (disabled by request)
+                        # summary = _strip_leading_title_echo(summary, effective_title)
+                        # summary = clean_summary(summary, 160)
+                        logger.debug(f"Successfully summarized page: {page_url}")
+                        logger.info(f"LLM API call completed for: {page_url}")
+                        return summary
+                    except (openai.RateLimitError, openai.APIConnectionError, openai.APIError) as e:
+                        delay = (0.5 * (2 ** i)) + random.uniform(0, 0.2)
+                        logger.info(f"LLM transient error on attempt {i+1} for {page_url}: {str(e)}; retrying in {delay:.2f}s")
+                        time.sleep(delay)
+                logger.info(f"LLM retries exhausted for: {page_url}; using fallback")
+                return get_fallback_summary(soup, page_url, link_title, error_prefix="Error: ")
             
             except Exception as e:
+                logger.info(f"LLM unexpected error for: {page_url}; using fallback")
                 return get_fallback_summary(soup, page_url, link_title, error_prefix="Error: ")
         else:
             # No API key, use fallback
             
+            logger.info(f"LLM disabled (no OPENAI_API_KEY); using fallback for: {page_url}")
             return get_fallback_summary(soup, page_url, link_title)
             
     except Exception as e:
         logger.error(f"Unexpected error summarizing {page_url}: {str(e)}")
-        # If we have a link title, use it as a fallback
-        if link_title:
-            return f"Page about {link_title}"
-        return f"Could not summarize: {page_url}"
+        # Re-raise the exception so it gets caught by batch processing
+        raise Exception(f"Could not summarize {page_url}: {str(e)}")
 
 def get_fallback_summary(soup, page_url, link_title=None, error_prefix=""):
     """
@@ -1766,6 +1914,62 @@ def extract_url_title(url_path):
     
     return title if title else "Homepage"
 
+page_title_cache = {}
+
+def get_page_title(page_url):
+    """
+    Fetch and extract a human-friendly page title from the given URL.
+    Preference order: og:title > twitter:title > first h1/h2 > <title> > URL-derived title.
+    Uses a small in-memory cache to avoid duplicate fetches.
+    """
+    try:
+        if page_url in page_title_cache:
+            return page_title_cache[page_url]
+        if not check_robots_txt(page_url):
+            # Respect robots, fall back to URL-derived
+            title = extract_url_title(urlparse(page_url).path)
+            page_title_cache[page_url] = title
+            return title
+        response = requests.get(page_url, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # Meta og:title
+        og_title = soup.find("meta", attrs={"property": "og:title"})
+        if og_title and og_title.get('content'):
+            title = og_title.get('content').strip()
+            if title:
+                page_title_cache[page_url] = title
+                return title
+        # Meta twitter:title
+        twitter_title = soup.find("meta", attrs={"name": "twitter:title"})
+        if twitter_title and twitter_title.get('content'):
+            title = twitter_title.get('content').strip()
+            if title:
+                page_title_cache[page_url] = title
+                return title
+        # Headings
+        heading = soup.find(['h1', 'h2'])
+        if heading:
+            title = heading.get_text(strip=True)
+            if title and len(title) > 3:
+                page_title_cache[page_url] = title
+                return title
+        # <title>
+        if soup.title and soup.title.string:
+            title = soup.title.string.strip()
+            if title:
+                page_title_cache[page_url] = title
+                return title
+        # Fallback to URL-derived
+        title = extract_url_title(urlparse(page_url).path)
+        page_title_cache[page_url] = title
+        return title
+    except Exception:
+        # On any failure, fallback to URL-derived
+        title = extract_url_title(urlparse(page_url).path)
+        page_title_cache[page_url] = title
+        return title
+
 def get_structured_data_title(soup, a_tag):
     """
     Look for structured data titles in the vicinity of the link.
@@ -2087,7 +2291,7 @@ def fetch_page_and_extract_full_content(page_url, link_title=None):
     """
     try:
         if not check_robots_txt(page_url):
-            return f"Respecting robots.txt: Not allowed to access {page_url}"
+            raise PermissionError(f"Respecting robots.txt: Not allowed to access {page_url}")
         
         logger.info(f"Fetching full content for page: {page_url}")
         response = requests.get(page_url, timeout=REQUEST_TIMEOUT)
@@ -2162,21 +2366,21 @@ def fetch_page_and_extract_full_content(page_url, link_title=None):
                 'metadata': metadata
             }
         else:
-            return f"No substantial content extracted from {page_url}"
+            raise ValueError(f"No substantial content extracted from {page_url}")
         
     except requests.exceptions.Timeout:
         logger.error(f"Timeout error fetching full content for {page_url}")
-        return f"Timeout accessing: {page_url}"
+        raise requests.exceptions.Timeout(f"Timeout accessing: {page_url}")
     except requests.exceptions.ConnectionError:
         logger.error(f"Connection error fetching full content for {page_url}")
-        return f"Connection error: {page_url}"
+        raise requests.exceptions.ConnectionError(f"Connection error: {page_url}")
     except requests.exceptions.HTTPError as e:
         status_code = e.response.status_code if e.response else "unknown"
         logger.error(f"HTTP error {status_code} fetching full content for {page_url}")
-        return f"HTTP error {status_code}: {page_url}"
+        raise requests.exceptions.HTTPError(f"HTTP error {status_code}: {page_url}")
     except Exception as e:
         logger.error(f"Error fetching/extracting full content for {page_url}: {str(e)}")
-        return f"Error fetching content: {page_url} - {str(e)}"
+        raise Exception(f"Error fetching content: {page_url} - {str(e)}")
 
 def format_llms_full_text(website_url, site_description, successful_sections, failed_sections):
     """
@@ -2655,6 +2859,31 @@ def generate_llm_text():
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
+        # Seed title cache from this soup to speed up finalize
+        try:
+            eff_title = None
+            ogt = soup.find('meta', attrs={'property': 'og:title'})
+            if ogt and ogt.get('content'):
+                eff_title = ogt.get('content').strip()
+            if not eff_title:
+                twt = soup.find('meta', attrs={'name': 'twitter:title'})
+                if twt and twt.get('content'):
+                    eff_title = twt.get('content').strip()
+            if not eff_title:
+                h = soup.find(['h1', 'h2'])
+                if h:
+                    txt = h.get_text(strip=True)
+                    if txt and len(txt) > 3:
+                        eff_title = txt
+            if not eff_title and soup.title and soup.title.string:
+                t = soup.title.string.strip()
+                if t:
+                    eff_title = t
+            if eff_title:
+                page_title_cache[website_url] = eff_title
+        except Exception:
+            pass
+
         site_description = extract_site_description(soup, website_url)
         internal_links = extract_internal_links(soup, website_url)
         # TEMPORARILY REMOVE FILTERING TO CAPTURE ALL PAGES
@@ -2695,13 +2924,13 @@ def generate_llm_text():
                         successful_links.append({
                             "summary": summary,
                             "url": link["url"],
-                            "title": link["description"]
+                            "title": get_page_title(link["url"]) or link["description"]
                         })
                     except Exception as exc:
                         logger.error(f"Error processing link {link['url']}: {str(exc)}")
                         failed_links.append({
                             "url": link["url"],
-                            "title": link["description"],
+                            "title": get_page_title(link["url"]) or link["description"],
                             "error": str(exc)
                         })
             
