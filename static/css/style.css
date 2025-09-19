@@ -19,7 +19,8 @@ body {
   color: #fff;
   text-align: center;
   padding: 60px 20px;
-  min-height: 60vh;
+  /* rem-based responsive height to avoid iframe issues */
+  min-height: 28rem;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -202,6 +203,8 @@ body {
   gap: 10px;
   margin-top: 10px;
   flex-wrap: wrap;
+  /* add some bottom breathing room in general */
+  margin-bottom: 12px;
 }
 
 .action-buttons .btn {
@@ -781,6 +784,12 @@ body {
     padding: 12px;
     overflow-x: hidden; /* Prevent horizontal scroll */
   }
+
+  /* Ensure action buttons aren't glued to the bottom on small screens */
+  .action-buttons {
+    margin-bottom: 15px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  }
   
   .modal-title {
     font-size: 20px;
@@ -832,7 +841,7 @@ body {
 
   .hero {
     padding: 40px 20px;
-    min-height: 50vh;
+    min-height: 22rem;
   }
 
   .hero h1 {
