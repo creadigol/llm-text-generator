@@ -96,19 +96,59 @@ document.addEventListener('DOMContentLoaded', () => {
     const LLM_TOOL_KEY = '/llm-text-generator';
 
     // Cookie utility functions
+    // Determine the root domain that accepts cookies (e.g., example.com for app.sub.example.com)
+    const HOSTNAME = window.location.hostname;
+    const ROOT_DOMAIN = (function getRootDomain() {
+        // For IPs or localhost, just return the host as-is
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(HOSTNAME) || HOSTNAME === 'localhost') {
+            return HOSTNAME;
+        }
+        const parts = HOSTNAME.split('.');
+        // Prefer the highest-level registrable domain that accepts cookies.
+        // e.g., from a.b.example.co.uk try example.co.uk first, then b.example.co.uk, etc.
+        for (let i = parts.length - 2; i >= 0; i--) {
+            const candidate = parts.slice(i).join('.');
+            const testName = `__rd_test_${Date.now()}_${i}`;
+            const expires = new Date(Date.now() + 60 * 1000).toUTCString();
+            document.cookie = `${testName}=1;expires=${expires};path=/;domain=.${candidate}`;
+            const present = document.cookie.indexOf(`${testName}=1`) !== -1;
+            // Cleanup the test cookie on that candidate domain
+            document.cookie = `${testName}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=.${candidate}`;
+            if (present) return candidate;
+        }
+        // Fallback to host
+        return HOSTNAME;
+    })();
+
     function deleteCookie(name) {
+        // Delete from current host
         document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
+        // Also delete from root domain if different and applicable
+        if (ROOT_DOMAIN && ROOT_DOMAIN !== HOSTNAME) {
+            document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=.${ROOT_DOMAIN}`;
+        }
     }
 
     function setCookie(name, value, days = 7) {
         if (name === 'inquiry_form_payload' || name === 'result_height') {
             // Session cookie (expires when browser closes)
-            document.cookie = `${name}=${encodeURIComponent(JSON.stringify(value))};path=/`;
+            // Set for current host
+            document.cookie = `${name}=${value};path=/`;
+            // Also set for root domain
+            if (ROOT_DOMAIN && ROOT_DOMAIN !== HOSTNAME) {
+                document.cookie = `${name}=${value};path=/;domain=.${ROOT_DOMAIN}`;
+            }
         } else {
             // Regular cookie with expiration
             const expires = new Date();
             expires.setTime(expires.getTime() + (days * 24 * 60 * 60 * 1000));
-            document.cookie = `${name}=${encodeURIComponent(JSON.stringify(value))};expires=${expires.toUTCString()};path=/`;
+            const expStr = expires.toUTCString();
+            // Set for current host
+            document.cookie = `${name}=${value};expires=${expStr};path=/`;
+            // Also set for root domain
+            if (ROOT_DOMAIN && ROOT_DOMAIN !== HOSTNAME) {
+                document.cookie = `${name}=${value};expires=${expStr};path=/;domain=.${ROOT_DOMAIN}`;
+            }
         }
     }
 
@@ -119,11 +159,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let c = ca[i];
             while (c.charAt(0) === ' ') c = c.substring(1, c.length);
             if (c.indexOf(nameEQ) === 0) {
-                try {
-                    return JSON.parse(decodeURIComponent(c.substring(nameEQ.length, c.length)));
-                } catch (e) {
-                    return null;
-                }
+                return c.substring(nameEQ.length, c.length);
             }
         }
         return null;
@@ -173,7 +209,7 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem('result_height', '0');
     }
 
-    // Function to load saved iframe height (prefer cookie, fallback to localStorage)
+    // Function to load saved section height (prefer cookie, fallback to localStorage)
     function loadIframeHeight() {
         const cookieVal = getCookie('result_height');
         const lsVal = localStorage.getItem('result_height');
@@ -181,15 +217,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const numericHeight = parseInt(result_height, 10);
         // Honor 0 before any content is rendered; otherwise use stored value
         if (!isNaN(numericHeight) && numericHeight >= 0) {
-            outputIframe.style.height = numericHeight + 'px';
+            outputSection.style.height = numericHeight + 'px';
+            // Set iframe height proportionally within the section
+            const headerHeight = 60;
+            const buttonsHeight = 50;
+            const padding = 30;
+            const iframeHeight = numericHeight - headerHeight - buttonsHeight - padding;
+            outputIframe.style.height = Math.max(200, iframeHeight) + 'px';
         } else {
+            outputSection.style.height = '0px';
             outputIframe.style.height = '0px';
         }
     }
 
-    // Function to save iframe height to both cookie (session) and localStorage
+    // Function to save section height to both cookie (session) and localStorage
     function saveIframeHeight() {
-        const result_height = outputIframe.offsetHeight;
+        const result_height = outputSection.offsetHeight;
         const value = String(result_height);
         setCookie('result_height', value); // Session cookie
         localStorage.setItem('result_height', value);
@@ -278,24 +321,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <style>
+                    * {
+                        margin: 0;
+                        padding: 0;
+                        box-sizing: border-box;
+                    }
+                    html, body {
+                        height: 100%;
+                        overflow: hidden;
+                    }
                     body {
                         font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
                         font-size: 14px;
-                        line-height: 1.6;
-                        margin: 0;
-                        padding: 0;
+                        line-height: 1.4;
                         background: #f9fafb;
                         color: #374151;
                         white-space: pre-wrap;
                         word-wrap: break-word;
+                        display: flex;
+                        align-items: stretch;
                     }
                     .content {
                         background: white;
-                        padding: 10px;
-                        border-radius: 8px;
+                        padding: 8px;
+                        border-radius: 6px;
                         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-                        max-width: 100%;
-                        overflow-x: auto;
+                        width: 100%;
+                        overflow: auto;
+                        flex: 1;
                     }
                 </style>
             </head>
@@ -321,10 +374,21 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => {
             const iframeBody = iframeDoc.body;
             if (iframeBody) {
-                const result_height = iframeBody.scrollHeight;
-                // Clamp height between 400px (min) and 600px (max)
-                const newHeight = Math.max(400, Math.min(result_height + 40, 600));
-                outputIframe.style.height = newHeight + 'px';
+                const contentHeight = iframeBody.scrollHeight;
+                // Calculate iframe height first (clamp content between 300-1000px)
+                const minIframeHeight = 300;
+                const maxIframeHeight = 1000;
+                const iframeHeight = Math.max(minIframeHeight, Math.min(contentHeight, maxIframeHeight));
+                
+                // Calculate section height: iframe + header + buttons + padding
+                const headerHeight = 60; // Approximate height of "Generated Output" header
+                const buttonsHeight = 50; // Approximate height of action buttons
+                const padding = 30; // Section padding (reduced)
+                const newHeight = iframeHeight + headerHeight + buttonsHeight + padding;
+                
+                outputSection.style.height = newHeight + 'px';
+                outputIframe.style.height = iframeHeight + 'px';
+                
                 saveIframeHeight();
             }
         }, 100);
@@ -386,9 +450,10 @@ document.addEventListener('DOMContentLoaded', () => {
             downloadBtn.style.display = 'none';
             copyMessage.style.display = 'none';
             
-            // Reset stored iframe height for a fresh session
+            // Reset stored section height for a fresh session
             setCookie('result_height', '0');
             localStorage.setItem('result_height', '0');
+            outputSection.style.height = '0px';
             outputIframe.style.height = '0px';
             
             // Show processing overlay with animation
@@ -478,13 +543,8 @@ document.addEventListener('DOMContentLoaded', () => {
         downloadBtn.style.display = 'none';
         copyMessage.style.display = 'none';
         
-        // Only show error in iframe for generation-related errors, not for validation/authentication errors
-        if (!message.includes('OTP') && !message.includes('email') && !message.includes('verify') && 
-            !message.includes('Invalid URL') && !message.includes('URL format') && 
-            !message.includes('Please enter') && !message.includes('required')) {
-            const errorContent = `An error occurred: ${message}\n\nPlease try again with a different URL or check your API key configuration.`;
-            displayContentInIframe(errorContent);
-        }
+        // No errors should be displayed in the generated output iframe
+        // All errors are shown only in the status message area
     }
 
     // Function to display success message
@@ -509,7 +569,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // If inquiry_form_payload cookie has an email, skip OTP
         const inquiryCookie = getCookie('inquiry_form_payload');
-        const hasInquiryEmail = inquiryCookie && inquiryCookie.uEmail;
+        const hasInquiryEmail = inquiryCookie && inquiryCookie.includes('uEmail');
         if (hasInquiryEmail) {
             // Mark as visited for this session and proceed directly
             updateSessionStorage(LLM_TOOL_KEY);
@@ -631,7 +691,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         ToolTitle: 'llm-text-generator',
                         ToolSubmit: 'Send'
                     };
-                    setCookie('inquiry_form_payload', inquiryFormPayload);
+                    setCookie('inquiry_form_payload', JSON.stringify(inquiryFormPayload));
                 }
                 
                 hideOtpModal();
@@ -995,9 +1055,10 @@ document.addEventListener('DOMContentLoaded', () => {
         downloadBtn.style.display = 'none';
         copyMessage.style.display = 'none';
         
-        // Reset saved iframe height and collapse iframe
+        // Reset saved section height and collapse section
         setCookie('result_height', '0');
         localStorage.setItem('result_height', '0');
+        outputSection.style.height = '0px';
         outputIframe.style.height = '0px';
         
         // Reset to default output type (summarized)
@@ -1058,13 +1119,21 @@ document.addEventListener('DOMContentLoaded', () => {
     // Function to pre-fill form with cookie data
     function prefillFormFromCookie() {
         const cookieData = getCookie('inquiry_form_payload');
-        if (cookieData && cookieData.uName && cookieData.uEmail) {
-            const nameInput = document.getElementById('formName');
-            const emailInput = document.getElementById('formEmail');
-            
-            if (nameInput && emailInput) {
-                nameInput.value = cookieData.uName;
-                emailInput.value = cookieData.uEmail;
+        if (cookieData) {
+            // Parse the cookie data if it contains JSON-like structure
+            try {
+                const parsedData = JSON.parse(cookieData);
+                if (parsedData.uName && parsedData.uEmail) {
+                    const nameInput = document.getElementById('formName');
+                    const emailInput = document.getElementById('formEmail');
+                    
+                    if (nameInput && emailInput) {
+                        nameInput.value = parsedData.uName;
+                        emailInput.value = parsedData.uEmail;
+                    }
+                }
+            } catch (e) {
+                // If not JSON, skip pre-filling
             }
         }
     }
