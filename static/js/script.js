@@ -219,11 +219,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!isNaN(numericHeight) && numericHeight >= 0) {
             outputSection.style.height = numericHeight + 'px';
             // Set iframe height proportionally within the section
-            const headerHeight = 60;
-            const buttonsHeight = 50;
-            const padding = 30;
+            const isMobile = window.innerWidth <= 768;
+            const headerHeight = isMobile ? 50 : 60;
+            const buttonsHeight = isMobile ? 100 : 50; // More space for stacked buttons on mobile
+            const padding = isMobile ? 20 : 30;
             const iframeHeight = numericHeight - headerHeight - buttonsHeight - padding;
-            outputIframe.style.height = Math.max(200, iframeHeight) + 'px';
+            const minIframeHeight = isMobile ? 250 : 200;
+            outputIframe.style.height = Math.max(minIframeHeight, iframeHeight) + 'px';
         } else {
             outputSection.style.height = '0px';
             outputIframe.style.height = '0px';
@@ -331,7 +333,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         overflow: hidden;
                     }
                     body {
-                        font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+                        font-family: 'Poppins', Arial, sans-serif;
                         font-size: 14px;
                         line-height: 1.4;
                         background: #f9fafb;
@@ -375,15 +377,19 @@ document.addEventListener('DOMContentLoaded', () => {
             const iframeBody = iframeDoc.body;
             if (iframeBody) {
                 const contentHeight = iframeBody.scrollHeight;
-                // Calculate iframe height first (clamp content between 300-1000px)
-                const minIframeHeight = 300;
-                const maxIframeHeight = 1000;
+                
+                // Mobile-specific height adjustments
+                const isMobile = window.innerWidth <= 768;
+                const minIframeHeight = isMobile ? 250 : 300;
+                const maxIframeHeight = isMobile ? 600 : 1000;
+                
+                // Calculate iframe height first (clamp content between min-max)
                 const iframeHeight = Math.max(minIframeHeight, Math.min(contentHeight, maxIframeHeight));
                 
                 // Calculate section height: iframe + header + buttons + padding
-                const headerHeight = 60; // Approximate height of "Generated Output" header
-                const buttonsHeight = 50; // Approximate height of action buttons
-                const padding = 30; // Section padding (reduced)
+                const headerHeight = isMobile ? 50 : 60; // Smaller header on mobile
+                const buttonsHeight = isMobile ? 100 : 50; // More space for stacked buttons on mobile
+                const padding = isMobile ? 20 : 30; // Less padding on mobile
                 const newHeight = iframeHeight + headerHeight + buttonsHeight + padding;
                 
                 outputSection.style.height = newHeight + 'px';
@@ -1093,6 +1099,8 @@ document.addEventListener('DOMContentLoaded', () => {
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
             if (outputSection.style.display !== 'none') {
+                // Recalculate heights for mobile/desktop switch
+                loadIframeHeight();
                 saveIframeHeight();
             }
         }, 250);
