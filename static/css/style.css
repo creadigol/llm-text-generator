@@ -178,6 +178,10 @@ body {
   border: 1px solid #fca5a5;
 }
 
+.status-message:empty {
+  display: none;
+}
+
 .output h2 {
   font-size: 1.2rem;
   margin-bottom: 10px;
@@ -743,7 +747,6 @@ body {
   }
 
   .controls,
-  .toggle-group,
   .input-row,
   .action-buttons {
     flex-direction: column;
@@ -809,6 +812,27 @@ body {
   .action-buttons .btn {
     width: 100%;
   }
+
+  .toggle-btn {
+    font-size: 12px;
+  }
+
+  .status-message {
+    font-size: 13px;
+    padding: 8px;
+    margin-top: 8px;
+  }
+
+  .hero .subtitle {
+    font-size: 0.9rem;
+    padding-bottom: 12px;
+  }
+
+  .hero .description {
+    font-size: 0.85rem;
+    line-height: 1.3;
+    padding-bottom: 25px;
+  }
   
   /* Ensure OTP container fits perfectly */
   .otp-input-container {
@@ -848,7 +872,28 @@ body {
     font-size: 1.5rem;
   }
 
+  .hero .subtitle {
+    font-size: 1rem;
+    padding-bottom: 15px;
+  }
+
+  .hero .description {
+    font-size: 0.9rem;
+    line-height: 1.4;
+    padding-bottom: 30px;
+    max-width: 100%;
+  }
+
   .generator-card {
     padding: 20px;
+  }
+
+  .toggle-btn {
+    font-size: 13px;
+  }
+
+  .status-message {
+    font-size: 13px;
+    padding: 9px;
   }
 }
