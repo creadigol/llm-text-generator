@@ -27,22 +27,22 @@ body {
 }
 
 .hero h1 {
-  font-size: 2rem;
+  font-size: 2.5rem;
   margin-bottom: 10px;
   padding-bottom: 10px;
 }
 
 .hero .subtitle {
-  font-weight: 600;
+  /* font-weight: 600; */
   margin-bottom: 8px;
   padding-bottom: 20px;
 }
 
 .hero .description {
-  max-width: 760px;
+  max-width: 50rem;
   margin: 0 auto;
   line-height: 1.5;
-  padding-bottom: 50px;
+  padding-bottom: 30px;
 }
 
 .main-wrapper {
